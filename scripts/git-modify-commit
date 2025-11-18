@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+print_help() {
+  cat <<EOF
+Change the author, email, and date for a specific commit hash.
+
+Usage:
+  git modify-commit HASH "Name" EMAIL DATE [--dry-run|--no-dry-run] [--force]
+
+Options:
+  -n, --dry-run      Show what would be executed without changing history (default)
+      --no-dry-run   Actually rewrite history
+  -f, --force        Skip clean working tree check
+  -h, --help         Show this help
+
+This command rewrites Git history. You may need to force-push afterwards.
+EOF
+}
+
+die() {
+  echo "git-modify-commit: $*" >&2
+  exit 1
+}
+
+require_clean_worktree() {
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+      die "Working tree is not clean. Commit or stash your changes, or use --force."
+    fi
+  else
+    die "Not inside a Git repository."
+  fi
+}
+
+TARGET=""
+NAME=""
+EMAIL=""
+DATE=""
+DRY_RUN=1
+FORCE=0
+
+if [ "$#" -eq 0 ]; then
+  print_help
+  exit 1
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n|--dry-run) DRY_RUN=1; shift ;;
+    --no-dry-run) DRY_RUN=0; shift ;;
+    -f|--force) FORCE=1; shift ;;
+    -h|--help) print_help; exit 0 ;;
+    --) shift; break ;;
+    -*) die "Unknown option: $1" ;;
+    *)
+      if [ -z "$TARGET" ]; then
+        TARGET="$1"
+      elif [ -z "$NAME" ]; then
+        NAME="$1"
+      elif [ -z "$EMAIL" ]; then
+        EMAIL="$1"
+      elif [ -z "$DATE" ]; then
+        DATE="$1"
+      else
+        die "Unexpected positional argument: $1"
+      fi
+      shift ;;
+  esac
+done
+
+[ -z "$TARGET" ] && die "Missing HASH argument"
+[ -z "$NAME" ] && die "Missing NAME argument"
+[ -z "$EMAIL" ] && die "Missing EMAIL argument"
+[ -z "$DATE" ] && die "Missing DATE argument"
+
+if [ "$FORCE" -ne 1 ]; then
+  require_clean_worktree
+fi
+
+FILTER_SCRIPT="if [ \"\${GIT_COMMIT-}\" = \"$TARGET\" ]; then
+    export GIT_AUTHOR_NAME=\"$NAME\";
+    export GIT_AUTHOR_EMAIL=\"$EMAIL\";
+    export GIT_COMMITTER_NAME=\"$NAME\";
+    export GIT_COMMITTER_EMAIL=\"$EMAIL\";
+    export GIT_AUTHOR_DATE=\"$DATE\";
+    export GIT_COMMITTER_DATE=\"$DATE\";
+fi"
+
+CMD="git filter-branch -f --env-filter '$FILTER_SCRIPT' --tag-name-filter cat -- --all"
+
+echo "About to run:"
+echo "  $CMD"
+echo
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "Dry-run mode: not rewriting history. Use --no-dry-run to actually run."
+  exit 0
+fi
+
+read -r -p "This will rewrite Git history. Continue? [y/N] " ans
+case "${ans:-N}" in
+  y|Y) ;;
+  *)
+    echo "Aborted." >&2
+    exit 1
+    ;;
+esac
+
+eval "$CMD"

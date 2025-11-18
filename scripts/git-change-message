@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+print_help() {
+  cat <<EOF
+Replace commit messages for commits with exactly one parent.
+
+Usage:
+  git change-message MESSAGE [--dry-run|--no-dry-run] [--force]
+
+Options:
+  -n, --dry-run      Show what would be executed without changing history (default)
+      --no-dry-run   Actually rewrite history
+  -f, --force        Skip clean working tree check
+  -h, --help         Show this help
+
+This command rewrites Git history. You may need to force-push afterwards.
+EOF
+}
+
+die() {
+  echo "git-change-message: $*" >&2
+  exit 1
+}
+
+require_clean_worktree() {
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+      die "Working tree is not clean. Commit or stash your changes, or use --force."
+    fi
+  else
+    die "Not inside a Git repository."
+  fi
+}
+
+MESSAGE=""
+DRY_RUN=1
+FORCE=0
+
+if [ "$#" -eq 0 ]; then
+  print_help
+  exit 1
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n|--dry-run) DRY_RUN=1; shift ;;
+    --no-dry-run) DRY_RUN=0; shift ;;
+    -f|--force) FORCE=1; shift ;;
+    -h|--help) print_help; exit 0 ;;
+    --) shift; break ;;
+    -*) die "Unknown option: $1" ;;
+    *)
+      if [ -z "$MESSAGE" ]; then
+        MESSAGE="$1"
+      else
+        die "Unexpected positional argument: $1"
+      fi
+      shift ;;
+  esac
+done
+
+[ -z "$MESSAGE" ] && die "Missing MESSAGE argument"
+
+if [ "$FORCE" -ne 1 ]; then
+  require_clean_worktree
+fi
+
+CMD="git filter-branch --msg-filter \"P=\\\$(git cat-file commit \\\$GIT_COMMIT | sed -n \\\"s/^parent //p\\\" | wc -l); if [ \\\"\\\$P\\\" -eq 1 ]; then echo \\\"$MESSAGE\\\"; else cat; fi\" -- --all"
+
+echo "About to run:"
+echo "  $CMD"
+echo
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "Dry-run mode: not rewriting history. Use --no-dry-run to actually run."
+  exit 0
+fi
+
+read -r -p "This will rewrite Git history. Continue? [y/N] " ans
+case "${ans:-N}" in
+  y|Y) ;;
+  *)
+    echo "Aborted." >&2
+    exit 1
+    ;;
+esac
+
+eval "$CMD"
+
